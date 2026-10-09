@@ -214,3 +214,13 @@ test('primary keys enforce uniqueness and schema definitions are immutable', (t)
   assert.throws(() => storage.insert(schema, { key: 'unique' }), /UNIQUE constraint/);
   assert.throws(() => storage.insert(schema, {}), /Missing required field/);
 });
+
+test('out-of-range generated IDs fail without rounding or persisting a row', (t) => {
+  const storage = setup(t);
+  const user = storage.insert(users, { id: Number.MAX_SAFE_INTEGER, name: 'Last safe ID' });
+  assert.equal(user.id, Number.MAX_SAFE_INTEGER);
+  assert.throws(() => storage.insert(users, { name: 'Overflow' }), /safe integer range/);
+  assert.throws(() => storage.insert(users, { name: 'Still overflow' }), /safe integer range/);
+  assert.deepEqual(storage.select(users, { id: user.id }), [user]);
+  assert.deepEqual(storage.select(users), [user]);
+});

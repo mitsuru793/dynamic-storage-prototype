@@ -98,6 +98,12 @@ class ModelSchema {
   decode(row) {
     return Object.fromEntries(Object.keys(this.fields).map((name, index) => {
       let value = row[index];
+      if (typeof value === 'bigint') {
+        if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
+          throw new RangeError(`Integer value for ${name} exceeds the JavaScript safe integer range`);
+        }
+        value = Number(value);
+      }
       if (value !== null && this.fields[name].type === 'boolean') value = value === 1;
       if (value !== null && this.fields[name].type === 'date') value = new Date(value);
       return [name, value];
@@ -110,6 +116,7 @@ class StorageEngine {
 
   constructor(filename = 'storage.sqlite') {
     this.#database = new Database(filename);
+    this.#database.defaultSafeIntegers(true);
   }
 
   #checkSchema(schema) {
@@ -152,10 +159,12 @@ class StorageEngine {
     const columns = entries.map(([name]) => quoteIdentifier(name)).join(', ');
     const placeholders = entries.map(() => '?').join(', ');
     const valuesSQL = entries.length ? `(${columns}) VALUES (${placeholders})` : 'DEFAULT VALUES';
-    const row = this.#database.prepare(
-      `INSERT INTO ${quoteIdentifier(schema.tableName)} ${valuesSQL} RETURNING ${this.#columns(schema)}`,
-    ).raw().get(...entries.map(([, value]) => value));
-    return schema.decode(row);
+    return this.#database.transaction(() => {
+      const row = this.#database.prepare(
+        `INSERT INTO ${quoteIdentifier(schema.tableName)} ${valuesSQL} RETURNING ${this.#columns(schema)}`,
+      ).raw().get(...entries.map(([, value]) => value));
+      return schema.decode(row);
+    })();
   }
 
   select(schema, filter = {}) {
@@ -172,9 +181,9 @@ class StorageEngine {
       throw new TypeError('Update requires a non-empty filter and changes');
     }
     const assignments = entries.map(([name]) => `${quoteIdentifier(name)} = ?`).join(', ');
-    return this.#database.prepare(
+    return this.#database.transaction(() => this.#database.prepare(
       `UPDATE ${quoteIdentifier(schema.tableName)} SET ${assignments}${where.sql} RETURNING ${this.#columns(schema)}`,
-    ).raw().all(...entries.map(([, value]) => value), ...where.values).map((row) => schema.decode(row));
+    ).raw().all(...entries.map(([, value]) => value), ...where.values).map((row) => schema.decode(row)))();
   }
 
   delete(schema, filter) {
